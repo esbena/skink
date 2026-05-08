@@ -279,3 +279,154 @@ func must(t *testing.T, err error) {
 		t.Fatal(err)
 	}
 }
+
+func TestNewLibraryLocalSource(t *testing.T) {
+	// Create a local skills directory with some skills.
+	localDir := t.TempDir()
+	must(t, os.MkdirAll(filepath.Join(localDir, "skills", "alpha"), 0o755))
+	must(t, os.MkdirAll(filepath.Join(localDir, "skills", "beta"), 0o755))
+
+	project := seedProject(t, `
+[[imports]]
+path = "`+localDir+`"
+dirs = ["skills/*"]
+`, ".skink.toml")
+	g := &libFakeGit{}
+	lib, err := NewLibrary(project, t.TempDir(), g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lib.Sources) != 1 {
+		t.Fatalf("want 1 source, got %d", len(lib.Sources))
+	}
+	src := lib.Sources[0]
+	if !src.Local {
+		t.Error("source should be local")
+	}
+	if src.Repo.Dir != localDir {
+		t.Errorf("Repo.Dir = %q want %q", src.Repo.Dir, localDir)
+	}
+}
+
+func TestEnsureClonedSkipsLocalSource(t *testing.T) {
+	localDir := t.TempDir()
+	must(t, os.MkdirAll(filepath.Join(localDir, "alpha"), 0o755))
+
+	project := seedProject(t, `
+[[imports]]
+path = "`+localDir+`"
+dirs = ["alpha"]
+`, ".skink.toml")
+	g := &libFakeGit{}
+	lib, err := NewLibrary(project, t.TempDir(), g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lib.EnsureCloned(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// No git calls should have been made.
+	if len(g.allCalls) != 0 {
+		t.Errorf("expected no git calls for local source, got %v", g.allCalls)
+	}
+}
+
+func TestPullAllSkipsLocalSource(t *testing.T) {
+	localDir := t.TempDir()
+	must(t, os.MkdirAll(filepath.Join(localDir, "alpha"), 0o755))
+
+	project := seedProject(t, `
+[[imports]]
+path = "`+localDir+`"
+dirs = ["alpha"]
+`, ".skink.toml")
+	g := &libFakeGit{}
+	lib, err := NewLibrary(project, t.TempDir(), g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lib.PullAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.allCalls) != 0 {
+		t.Errorf("expected no git calls for local source, got %v", g.allCalls)
+	}
+}
+
+func TestListAllLocalSource(t *testing.T) {
+	localDir := t.TempDir()
+	must(t, os.MkdirAll(filepath.Join(localDir, "skills", "alpha"), 0o755))
+	must(t, os.MkdirAll(filepath.Join(localDir, "skills", "beta"), 0o755))
+
+	project := seedProject(t, `
+[[imports]]
+path = "`+localDir+`"
+dirs = ["skills/*"]
+`, ".skink.toml")
+	lib, err := NewLibrary(project, t.TempDir(), &libFakeGit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills, err := lib.ListAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("want 2 skills, got %d: %+v", len(skills), skills)
+	}
+	got := map[string]bool{}
+	for _, s := range skills {
+		got[s.Name] = true
+		if s.Source != localDir {
+			t.Errorf("skill %q Source = %q want %q", s.Name, s.Source, localDir)
+		}
+		if s.SourceURL != localDir {
+			t.Errorf("skill %q SourceURL = %q want %q", s.Name, s.SourceURL, localDir)
+		}
+	}
+	if !got["alpha"] || !got["beta"] {
+		t.Errorf("expected alpha and beta, got %v", got)
+	}
+}
+
+func TestListAllMixedLocalAndRemote(t *testing.T) {
+	cache := t.TempDir()
+	localDir := t.TempDir()
+	must(t, os.MkdirAll(filepath.Join(localDir, "local-skill"), 0o755))
+
+	// Set up remote repo in cache.
+	remote := filepath.Join(cache, "github.com", "acme", "skills")
+	must(t, os.MkdirAll(filepath.Join(remote, ".git"), 0o755))
+	must(t, os.MkdirAll(filepath.Join(remote, "remote-skill"), 0o755))
+
+	project := seedProject(t, `
+[[imports]]
+path = "`+localDir+`"
+dirs = ["local-skill"]
+
+[[imports]]
+url = "github.com/acme/skills"
+dirs = ["remote-skill"]
+`, ".skink.toml")
+	lib, err := NewLibrary(project, cache, &libFakeGit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills, err := lib.ListAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("want 2 skills, got %d: %+v", len(skills), skills)
+	}
+	got := map[string]string{}
+	for _, s := range skills {
+		got[s.Name] = s.Source
+	}
+	if got["local-skill"] != localDir {
+		t.Errorf("local-skill source = %q want %q", got["local-skill"], localDir)
+	}
+	if got["remote-skill"] != "github.com/acme/skills" {
+		t.Errorf("remote-skill source = %q", got["remote-skill"])
+	}
+}

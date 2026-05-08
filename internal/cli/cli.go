@@ -476,6 +476,10 @@ func (a *App) pullLibrary(ctx context.Context, lib skillrepo.Library) error {
 		return nil
 	}
 	for _, s := range lib.Sources {
+		if s.Local {
+			fmt.Fprintf(a.Out, "Skipping local source %s (always current)\n", s.Repo.Dir)
+			continue
+		}
 		label := s.URL.DisplayPath()
 		if s.Version != "" {
 			label += " @ " + s.Version

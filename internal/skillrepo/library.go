@@ -19,9 +19,13 @@ type Library struct {
 // Multiple imports can resolve to the same Source (for example, two
 // imports with different `dirs` selectors but the same `url`); they are
 // merged into a single Source with one Imports entry per original import.
+//
+// When Local is true, the source points directly at a local directory and
+// no git operations (clone, pull, fetch) are performed on it.
 type Source struct {
 	URL     GitURL
 	Version string
+	Local   bool
 	Imports []Import // one or more imports that resolve to this clone
 	Repo    Repo
 }
@@ -39,6 +43,21 @@ func NewLibrary(projectRoot, cacheHome string, git GitRunner) (Library, error) {
 
 	byDir := map[string]int{} // clone dir -> index into lib.Sources
 	for _, imp := range cfg.Imports {
+		if imp.IsLocal() {
+			// Local path imports: no git, just point at the directory.
+			dir := imp.Path
+			if idx, ok := byDir[dir]; ok {
+				lib.Sources[idx].Imports = append(lib.Sources[idx].Imports, imp)
+				continue
+			}
+			byDir[dir] = len(lib.Sources)
+			lib.Sources = append(lib.Sources, Source{
+				Local:   true,
+				Imports: []Import{imp},
+				Repo:    Repo{Dir: dir},
+			})
+			continue
+		}
 		u, err := ParseGitURL(imp.URL)
 		if err != nil {
 			return lib, err
@@ -68,8 +87,12 @@ func NewLibrary(projectRoot, cacheHome string, git GitRunner) (Library, error) {
 
 // EnsureCloned clones any source repo that is not yet present on disk.
 // Pinned sources are checked out to their version after cloning.
+// Local sources are skipped — they always point at an existing directory.
 func (l Library) EnsureCloned(ctx context.Context) error {
 	for _, s := range l.Sources {
+		if s.Local {
+			continue
+		}
 		if s.Repo.Exists() {
 			continue
 		}
@@ -86,11 +109,15 @@ func (l Library) EnsureCloned(ctx context.Context) error {
 }
 
 // PullAll updates every Source. Pinned sources are fetched + checked out to
-// their version; unpinned sources get `git pull --ff-only`. Errors from
-// individual sources are aggregated.
+// their version; unpinned sources get `git pull --ff-only`. Local sources
+// are skipped — they always reflect the current state of the directory.
+// Errors from individual sources are aggregated.
 func (l Library) PullAll(ctx context.Context) error {
 	var errs []error
 	for _, s := range l.Sources {
+		if s.Local {
+			continue
+		}
 		if !s.Repo.Exists() {
 			continue
 		}
@@ -134,10 +161,15 @@ func (l Library) ListAll() ([]Skill, error) {
 	var out []Skill
 
 	for _, src := range l.Sources {
-		if !src.Repo.Exists() {
+		if !src.sourceExists() {
 			continue
 		}
-		basePath := filepath.Join(src.URL.CloneDirSegments()...)
+		basePath := src.installBase()
+		sourceName := src.DisplayName()
+		sourceURL := src.URL.Original
+		if src.Local {
+			sourceURL = src.Repo.Dir
+		}
 		for _, imp := range src.Imports {
 			for _, dir := range importDirs(imp) {
 				sel, err := ParseDir(dir)
@@ -153,8 +185,8 @@ func (l Library) ListAll() ([]Skill, error) {
 					out = append(out, Skill{
 						Name:           rs.name,
 						Path:           rs.path,
-						Source:         src.URL.DisplayPath(),
-						SourceURL:      src.URL.Original,
+						Source:         sourceName,
+						SourceURL:      sourceURL,
 						SourceDir:      rs.subpath,
 						Version:        src.Version,
 						InstallSubpath: filepath.Join(basePath, sub),
@@ -178,6 +210,49 @@ func (l Library) Find(name string) (Skill, bool, error) {
 		}
 	}
 	return Skill{}, false, nil
+}
+
+// DisplayName returns a human-readable label for this source. For remote
+// sources it is "host/path"; for local sources it is the directory path.
+func (s Source) DisplayName() string {
+	if s.Local {
+		return s.Repo.Dir
+	}
+	return s.URL.DisplayPath()
+}
+
+// sourceExists reports whether the source directory is present on disk.
+// For remote sources this checks for a .git directory; for local sources
+// it only checks that the directory exists.
+func (s Source) sourceExists() bool {
+	if s.Local {
+		info, err := os.Stat(s.Repo.Dir)
+		return err == nil && info.IsDir()
+	}
+	return s.Repo.Exists()
+}
+
+// installBase returns the base path used when constructing InstallSubpath
+// for skills from this source. For local sources, we use "_local/" plus the
+// directory base name and a hash suffix to avoid collisions between different
+// local paths that share the same base name.
+func (s Source) installBase() string {
+	if s.Local {
+		base := filepath.Base(s.Repo.Dir)
+		// Use a short hash of the full path to disambiguate same-named dirs.
+		h := fnv32a(s.Repo.Dir)
+		return filepath.Join("_local", fmt.Sprintf("%s-%08x", base, h))
+	}
+	return filepath.Join(s.URL.CloneDirSegments()...)
+}
+
+func fnv32a(s string) uint32 {
+	var h uint32 = 2166136261
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= 16777619
+	}
+	return h
 }
 
 type resolvedSkill struct {
