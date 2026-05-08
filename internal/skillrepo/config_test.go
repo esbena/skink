@@ -206,8 +206,8 @@ func TestReadImportsMissingURL(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, ".skink.yaml", "imports:\n  - dirs:\n      - foo\n")
 	_, err := ReadImports(dir)
-	if err == nil || !strings.Contains(err.Error(), "url is required") {
-		t.Errorf("want url required, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "url or path is required") {
+		t.Errorf("want url or path required, got %v", err)
 	}
 }
 
@@ -404,5 +404,87 @@ func TestSaveConfigAt(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "github.com/acme/skills") {
 		t.Fatalf("saved config should contain URL, got %q", got)
+	}
+}
+
+func TestReadImportsPathImport(t *testing.T) {
+	dir := t.TempDir()
+	skillsDir := filepath.Join(dir, "my-skills")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, dir, ".skink.toml", `
+[[imports]]
+path = "`+skillsDir+`"
+dirs = ["agent-skills/general/*"]
+`)
+	cfg, err := ReadImports(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Imports) != 1 {
+		t.Fatalf("want 1 import, got %d", len(cfg.Imports))
+	}
+	imp := cfg.Imports[0]
+	if imp.Path != skillsDir {
+		t.Errorf("Path = %q want %q", imp.Path, skillsDir)
+	}
+	if imp.URL != "" {
+		t.Errorf("URL should be empty for path import, got %q", imp.URL)
+	}
+	if !imp.IsLocal() {
+		t.Error("IsLocal() should return true")
+	}
+}
+
+func TestReadImportsPathAndURLMutuallyExclusive(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, ".skink.yaml", `
+imports:
+  - url: github.com/acme/skills
+    path: /tmp/somewhere
+    dirs:
+      - foo
+`)
+	_, err := ReadImports(dir)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("want mutually exclusive error, got %v", err)
+	}
+}
+
+func TestReadImportsPathWithVersionRejected(t *testing.T) {
+	dir := t.TempDir()
+	skillsDir := t.TempDir()
+	writeFile(t, dir, ".skink.yaml", `
+imports:
+  - path: `+skillsDir+`
+    version: v1.0.0
+`)
+	_, err := ReadImports(dir)
+	if err == nil || !strings.Contains(err.Error(), "version is not allowed with path") {
+		t.Errorf("want version not allowed error, got %v", err)
+	}
+}
+
+func TestImportIsLocal(t *testing.T) {
+	if (Import{URL: "github.com/x/y"}).IsLocal() {
+		t.Error("URL import should not be local")
+	}
+	if !(Import{Path: "/tmp/foo"}).IsLocal() {
+		t.Error("path import should be local")
+	}
+}
+
+func TestReadImportsPathNonExistent(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, ".skink.yaml", `
+imports:
+  - path: /nonexistent/path/that/does/not/exist
+    dirs:
+      - foo
+`)
+	_, err := ReadImports(dir)
+	if err == nil || !strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("want no such file error for nonexistent path, got %v", err)
 	}
 }

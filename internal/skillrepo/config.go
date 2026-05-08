@@ -15,8 +15,11 @@ import (
 )
 
 // Import is one external skills source declared in a skink config file.
-// Each Import identifies a git repo (via URL) and optionally narrows the
-// set of skills to pick up via Dirs.
+// Each Import identifies a git repo (via URL) or a local directory (via
+// Path) and optionally narrows the set of skills to pick up via Dirs.
+//
+// URL and Path are mutually exclusive: exactly one must be set per import.
+// Version is only allowed with URL-based imports.
 //
 // Each entry in Dirs accepts these forms:
 //
@@ -28,6 +31,7 @@ import (
 // Version optionally pins the clone to a specific git ref.
 type Import struct {
 	URL     string   `yaml:"url"     json:"url"     toml:"url"`
+	Path    string   `yaml:"path"    json:"path"    toml:"path"`
 	Dirs    []string `yaml:"dirs"    json:"dirs"    toml:"dirs"`
 	Version string   `yaml:"version" json:"version" toml:"version"`
 }
@@ -163,11 +167,27 @@ func ReadImports(repoDir string) (Config, error) {
 	cfg.SkillDir = skillDir
 	out := make([]Import, 0, len(cfg.Imports))
 	for i, imp := range cfg.Imports {
-		if strings.TrimSpace(imp.URL) == "" {
-			return Config{}, fmt.Errorf("skillrepo: %s: imports[%d]: url is required", found, i)
+		hasURL := strings.TrimSpace(imp.URL) != ""
+		hasPath := strings.TrimSpace(imp.Path) != ""
+		if hasURL && hasPath {
+			return Config{}, fmt.Errorf("skillrepo: %s: imports[%d]: url and path are mutually exclusive", found, i)
 		}
-		if _, err := ParseGitURL(imp.URL); err != nil {
-			return Config{}, fmt.Errorf("skillrepo: %s: imports[%d]: %w", found, i, err)
+		if !hasURL && !hasPath {
+			return Config{}, fmt.Errorf("skillrepo: %s: imports[%d]: url or path is required", found, i)
+		}
+		if hasPath {
+			if strings.TrimSpace(imp.Version) != "" {
+				return Config{}, fmt.Errorf("skillrepo: %s: imports[%d]: version is not allowed with path imports", found, i)
+			}
+			resolved, err := resolveLocalPath(imp.Path)
+			if err != nil {
+				return Config{}, fmt.Errorf("skillrepo: %s: imports[%d]: %w", found, i, err)
+			}
+			imp.Path = resolved
+		} else {
+			if _, err := ParseGitURL(imp.URL); err != nil {
+				return Config{}, fmt.Errorf("skillrepo: %s: imports[%d]: %w", found, i, err)
+			}
 		}
 		for j, dir := range importDirs(imp) {
 			if _, err := ParseDir(dir); err != nil {
@@ -264,11 +284,22 @@ func validateConfig(cfg Config, found string) error {
 		return fmt.Errorf("skillrepo: %s: %w", found, err)
 	}
 	for i, imp := range cfg.Imports {
-		if strings.TrimSpace(imp.URL) == "" {
-			return fmt.Errorf("skillrepo: %s: imports[%d]: url is required", found, i)
+		hasURL := strings.TrimSpace(imp.URL) != ""
+		hasPath := strings.TrimSpace(imp.Path) != ""
+		if hasURL && hasPath {
+			return fmt.Errorf("skillrepo: %s: imports[%d]: url and path are mutually exclusive", found, i)
 		}
-		if _, err := ParseGitURL(imp.URL); err != nil {
-			return fmt.Errorf("skillrepo: %s: imports[%d]: %w", found, i, err)
+		if !hasURL && !hasPath {
+			return fmt.Errorf("skillrepo: %s: imports[%d]: url or path is required", found, i)
+		}
+		if hasPath {
+			if strings.TrimSpace(imp.Version) != "" {
+				return fmt.Errorf("skillrepo: %s: imports[%d]: version is not allowed with path imports", found, i)
+			}
+		} else {
+			if _, err := ParseGitURL(imp.URL); err != nil {
+				return fmt.Errorf("skillrepo: %s: imports[%d]: %w", found, i, err)
+			}
 		}
 		for j, dir := range importDirs(imp) {
 			if _, err := ParseDir(dir); err != nil {
@@ -656,4 +687,30 @@ func (g GitURL) CloneDirSegments() []string {
 // and as the Source label on listed skills.
 func (g GitURL) DisplayPath() string {
 	return g.Host + "/" + g.Path
+}
+
+// IsLocal reports whether this import uses a local path instead of a URL.
+func (imp Import) IsLocal() bool {
+	return imp.Path != ""
+}
+
+// resolveLocalPath resolves the path to absolute and validates that it
+// exists and is a directory.
+func resolveLocalPath(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+	abs, err := filepath.Abs(s)
+	if err != nil {
+		return "", fmt.Errorf("resolve path %q: %w", raw, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("path %q: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("path %q is not a directory", abs)
+	}
+	return abs, nil
 }
