@@ -339,16 +339,23 @@ func (a *App) buildScopePage(
 	}
 
 	for _, src := range lib.Sources {
-		repoID := src.URL.DisplayPath()
+		repoID := src.DisplayName()
 		repoAction := statusRepoAction{source: src}
 		repo := tui.StatusRepo{
 			ID:       repoID,
 			Scope:    scope,
 			Name:     repoID,
 			Version:  src.Version,
-			Checking: true,
+			Local:    src.Local,
+			Checking: !src.Local,
 		}
-		selection, selErr := sourceSkillSelectionFor(cfg, src.URL.Original, src.Repo)
+		var sourceURL string
+		if src.Local {
+			sourceURL = src.Repo.Dir
+		} else {
+			sourceURL = src.URL.Original
+		}
+		selection, selErr := sourceSkillSelectionFor(cfg, sourceURL, src.Repo)
 		if selErr != nil {
 			return nil, tui.StatusSection{}, selErr
 		}
@@ -606,7 +613,13 @@ func (a *App) handleStatusChooseSkills(page statusPage, action tui.StatusAction)
 	if len(repo.selection.discovered) == 0 {
 		return "", fmt.Errorf("no SKILL.md files found in %s", repo.source.Repo.Dir)
 	}
-	if err := a.applySourceSkillSelection(sp.root, sp.config, repo.source.URL.Original, sp.targetRoot, repo.selection, action.Selected); err != nil {
+	var repoSourceURL string
+	if repo.source.Local {
+		repoSourceURL = repo.source.Repo.Dir
+	} else {
+		repoSourceURL = repo.source.URL.Original
+	}
+	if err := a.applySourceSkillSelection(sp.root, sp.config, repoSourceURL, sp.targetRoot, repo.selection, action.Selected); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("updated skills for %s", action.RepoID), nil

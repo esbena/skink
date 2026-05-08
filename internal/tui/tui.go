@@ -842,6 +842,7 @@ type StatusRepo struct {
 	Scope       Scope
 	Name        string
 	Version     string
+	Local       bool
 	Upgrade     bool
 	Checking    bool
 	Error       string
@@ -1343,6 +1344,10 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "t":
 			if repo, ok := m.currentRepo(); ok {
+				if repo.Local {
+					m.err = "local source — tags are not applicable (reads directly from disk)"
+					return m, nil
+				}
 				if repo.Checking {
 					m.err = "still checking this repo for tags"
 					return m, nil
@@ -1361,6 +1366,10 @@ func (m statusModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "u":
 			if repo, ok := m.currentRepo(); ok {
+				if repo.Local {
+					m.err = "local source — already current (reads directly from disk)"
+					return m, nil
+				}
 				if repo.Version != "" && repo.Checking {
 					m.err = "still checking this repo for updates"
 					return m, nil
@@ -1642,17 +1651,21 @@ func (m statusModel) View() tea.View {
 			cursor := listCursor(rowIndex == m.cursor)
 			prefix := ""
 			suffix := ""
-			if repo.Upgrade {
+			if repo.Local {
+				suffix = helpStyle.Render(" (local)")
+			} else if repo.Upgrade {
 				prefix = " ⬆️"
 			}
-			if repo.Checking {
+			if !repo.Local && repo.Checking {
 				prefix = ""
 				suffix = helpStyle.Render(" checking...")
-			} else if repo.Error != "" {
+			} else if !repo.Local && repo.Error != "" {
 				prefix = errStyle.Render(" check failed")
 			}
 			version := repo.Version
-			if version == "" {
+			if repo.Local {
+				version = "local"
+			} else if version == "" {
 				version = "HEAD"
 			}
 			fmt.Fprintf(&b, "%s%s%s (%s)%s\n", cursor, titleStyle.Render(repo.Name), prefix, version, suffix)
